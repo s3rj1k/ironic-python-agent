@@ -39,6 +39,8 @@ CONF = cfg.CONF
 LOG = log.getLogger(__name__)
 
 IMAGE_CHUNK_SIZE = 1024 * 1024  # 1MB
+PRE_DEPLOYMENT_SCRIPT_PATH = 'openstack/content/ironic-pre-deploy.sh'
+POST_DEPLOYMENT_SCRIPT_PATH = 'openstack/content/ironic-post-deploy.sh'
 
 
 def _image_location(image_info):
@@ -1007,6 +1009,29 @@ class StandbyExtension(base.BaseAgentExtension):
         device = hardware.dispatch_to_managers('get_os_install_device',
                                                permit_refresh=True)
 
+        # Execute pre-deployment script from configdrive if present
+        # This happens BEFORE any disk operations (partitioning, imaging, etc.)
+        if configdrive:
+            confdrive_file = None
+            try:
+                node_uuid = image_info.get('node_uuid', 'local')
+                _, confdrive_file = partition_utils.get_configdrive(
+                    configdrive, node_uuid)
+                partition_utils.execute_configdrive_script(
+                    confdrive_file, device, image_info,
+                    PRE_DEPLOYMENT_SCRIPT_PATH)
+            except processutils.ProcessExecutionError as e:
+                LOG.error('Pre-deployment script execution failed, '
+                          'aborting deployment: %s', e)
+                raise errors.DeploymentError(
+                    'Pre-deployment script execution failed') from e
+            except Exception as e:
+                LOG.warning('Failed to process configdrive for pre-deployment '
+                            'script execution: %s', e)
+            finally:
+                if confdrive_file:
+                    utils.unlink_without_raise(confdrive_file)
+
         requested_disk_format = image_info.get('disk_format')
 
         stream_raw_images = image_info.get('stream_raw_images', False)
@@ -1055,6 +1080,28 @@ class StandbyExtension(base.BaseAgentExtension):
                                                               configdrive)
 
         self._fix_up_partition_uuids(image_info, device)
+
+        # Execute post-deployment script from configdrive if present
+        # This happens AFTER all disk operations (partitioning, imaging, etc.)
+        if configdrive:
+            confdrive_file = None
+            try:
+                node_uuid = image_info.get('node_uuid', 'local')
+                _, confdrive_file = partition_utils.get_configdrive(
+                    configdrive, node_uuid)
+                partition_utils.execute_configdrive_script(
+                    confdrive_file, device, image_info,
+                    POST_DEPLOYMENT_SCRIPT_PATH)
+            except processutils.ProcessExecutionError as e:
+                LOG.warning('Post-deployment script execution failed, '
+                            'continuing: %s', e)
+            except Exception as e:
+                LOG.debug('Failed to process configdrive for post-deployment '
+                          'script execution: %s', e)
+            finally:
+                if confdrive_file:
+                    utils.unlink_without_raise(confdrive_file)
+
         msg = 'image ({}) written to device {} '
         result_msg = _message_format(msg, image_info, device,
                                      self.partition_uuids)

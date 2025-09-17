@@ -1,0 +1,35 @@
+#!/bin/bash
+
+if [ ${DIB_DEBUG_TRACE:-0} -gt 0 ]; then
+    set -x
+fi
+
+set -eu
+set -o pipefail
+
+# Create the dhclient systemd service file
+cat > etc/systemd/system/dhclient.service << 'EOF'
+[Unit]
+Description=DHCP Client for all interfaces
+Before=ironic-python-agent.service
+Wants=network.target
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/usr/sbin/dhclient -4
+ExecStop=/usr/sbin/dhclient -r
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy=ironic-python-agent.service
+EOF
+
+# Create the necessary directories
+mkdir -p etc/systemd/system/multi-user.target.wants
+mkdir -p etc/systemd/system/ironic-python-agent.service.requires
+
+# Create symbolic links to enable the service
+ln -sf ../dhclient.service etc/systemd/system/multi-user.target.wants/dhclient.service
+ln -sf ../dhclient.service etc/systemd/system/ironic-python-agent.service.requires/dhclient.service

@@ -20,6 +20,7 @@ https://opendev.org/openstack/ironic-lib/commit/9fb5be348202f4854a455cd08f400ae1
 import base64
 import gzip
 import io
+import json
 import math
 import os
 import shutil
@@ -580,6 +581,97 @@ def _try_build_fat32_config_drive(partition, confdrive_file):
         utils.execute('umount', conf_drive_temp)
         utils.execute('umount', new_drive_temp)
         utils.unlink_without_raise(new_drive_temp)
+        utils.unlink_without_raise(conf_drive_temp)
+
+
+def execute_configdrive_script(confdrive_file, device, image_info,
+                               script_path):
+    """Execute a script from configdrive.
+
+    Looks for a shell script at the specified path in configdrive and executes
+    it synchronously. If the script fails (non-zero exit), function fails.
+    Exposes device context via environment variable and pipes image_info
+    as JSON to stdin.
+
+    :param confdrive_file: Path to the configdrive ISO file
+    :param device: The target device path (e.g., '/dev/sda')
+    :param image_info: Dictionary containing image information
+    :param script_path: Relative path to script inside configdrive
+    :raises: ProcessExecutionError if script execution fails or mounting fails
+    """
+
+    conf_drive_temp = tempfile.mkdtemp()
+    try:
+        utils.execute('mount', '-o', 'loop,ro,exec', '-t', 'auto',
+                      confdrive_file, conf_drive_temp)
+    except (processutils.ProcessExecutionError, OSError) as e:
+        LOG.warning('Unable to mount configuration drive for script '
+                    'execution: %s', e)
+        utils.unlink_without_raise(conf_drive_temp)
+        return
+
+    try:
+        script_full_path = os.path.join(conf_drive_temp, script_path)
+
+        if not os.path.exists(script_full_path):
+            LOG.debug('No script found at %s, skipping',
+                      script_path)
+            return
+
+        if not os.path.isfile(script_full_path):
+            LOG.warning('Script at %s is not a regular file, '
+                        'skipping', script_path)
+            return
+
+        LOG.info('Executing script from configdrive: %s',
+                 script_path)
+
+        env_vars = {
+            'IPA_TARGET_DEVICE': device,
+            'IPA_CONFIGDRIVE_MOUNT': conf_drive_temp,
+        }
+
+        LOG.debug('Environment variables for script: %s', env_vars)
+
+        try:
+            json_input = json.dumps(image_info, indent=2)
+        except (TypeError, ValueError) as e:
+            LOG.warning('Failed to serialize image_info to JSON: %s', e)
+            json_input = '{}'
+
+        shell_cmd = '/bin/bash'
+        try:
+            utils.execute('which', 'bash', check_exit_code=True)
+        except processutils.ProcessExecutionError:
+            LOG.debug('bash not available, falling back to sh')
+            shell_cmd = '/bin/sh'
+
+        try:
+            utils.execute(shell_cmd, script_full_path,
+                          process_input=json_input,
+                          timeout=900,
+                          check_exit_code=True,
+                          env_variables=env_vars)
+
+            LOG.info('Script %s completed successfully', script_path)
+
+        except processutils.ProcessExecutionError as e:
+            error_msg = ('Script execution failed. '
+                         'Script: %(script)s, Exit code: %(code)s, '
+                         'Stdout: %(stdout)s, Stderr: %(stderr)s' % {
+                             'script': script_path,
+                             'code': e.exit_code,
+                             'stdout': e.stdout,
+                             'stderr': e.stderr
+                         })
+            LOG.error(error_msg)
+            raise
+
+    finally:
+        try:
+            utils.execute('umount', conf_drive_temp)
+        except processutils.ProcessExecutionError:
+            LOG.warning('Failed to unmount configdrive temp directory')
         utils.unlink_without_raise(conf_drive_temp)
 
 
