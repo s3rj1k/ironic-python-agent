@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# https://docs.openstack.org/diskimage-builder/latest/developer/developing_elements.html
+
+if [ ${DIB_DEBUG_TRACE:-0} -gt 0 ]; then
+	set -x
+fi
+
+set -eu
+set -o pipefail
+
+mkdir -p "$TMP_HOOKS_PATH/element-overlay"
+cp -rv "$(dirname "$0")/../overlay/"* "$TMP_HOOKS_PATH/element-overlay/"

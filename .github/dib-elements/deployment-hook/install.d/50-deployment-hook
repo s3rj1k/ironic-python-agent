@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# https://docs.openstack.org/diskimage-builder/latest/developer/developing_elements.html
+
+if [ ${DIB_DEBUG_TRACE:-0} -gt 0 ]; then
+	set -x
+fi
+
+set -eu
+set -o pipefail
+
+cp -rv /tmp/in_target.d/element-overlay/* /
+chmod 755 /usr/local/bin/*
