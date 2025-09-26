@@ -8,7 +8,19 @@ on:
 
 jobs:
   build-ipa-image:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      amd64-kernel-size: ${{ steps.build-info.outputs.amd64-kernel-size }}
+      amd64-initramfs-size: ${{ steps.build-info.outputs.amd64-initramfs-size }}
+      arm64-kernel-size: ${{ steps.build-info.outputs.arm64-kernel-size }}
+      arm64-initramfs-size: ${{ steps.build-info.outputs.arm64-initramfs-size }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - name: Checkout repository
@@ -56,7 +68,8 @@ jobs:
           sudo apt-get install -y shellcheck
           find .github/dib-elements/deployment-hook -name "*.sh" -type f -exec shellcheck {} \;
 
-      - name: Build IPA ramdisk image
+      - name: Build IPA ramdisk image (amd64)
+        if: matrix.arch == 'amd64'
         env:
           DIB_RELEASE: "9-stream"
           DIB_CHECKSUM: "sha256"
@@ -70,33 +83,75 @@ jobs:
           DIB_REPOREF_ironic_python_agent: "HEAD"
         run: |
           ironic-python-agent-builder \
-            -o ipa \
+            -o ipa-amd64 \
             -e extra-hardware \
             -e devuser \
             -e dhclient-systemd \
             -e deployment-hook \
+            --extra-args="-a amd64" \
+            --release 9-stream centos
+
+      - name: Build IPA ramdisk image (arm64)
+        if: matrix.arch == 'arm64'
+        env:
+          DIB_RELEASE: "9-stream"
+          DIB_CHECKSUM: "sha256"
+          DIB_DHCP_TIMEOUT: "180"
+          DIB_PYTHON_EXEC: "/usr/bin/python3"
+          DIB_IPA_ENABLE_RESCUE: false
+          DIB_DEV_USER_USERNAME: "rescue"
+          DIB_DEV_USER_PASSWORD: "rescue"
+          DIB_DEV_USER_PWDLESS_SUDO: "yes"
+          DIB_REPOLOCATION_ironic_python_agent: "${{ github.workspace }}"
+          DIB_REPOREF_ironic_python_agent: "HEAD"
+        run: |
+          ironic-python-agent-builder \
+            -o ipa-arm64 \
+            -e extra-hardware \
+            -e devuser \
+            -e dhclient-systemd \
+            -e deployment-hook \
+            --extra-args="-a arm64 --no-tmpfs" \
             --release 9-stream centos
 
       - name: Verify image artifacts
         run: |
-          ls -lh ipa.kernel ipa.initramfs
+          ls -lh ipa-${{ matrix.arch }}.kernel ipa-${{ matrix.arch }}.initramfs
+
+      - name: Capture build information
+        id: build-info
+        run: |
+          KERNEL_SIZE=$(ls -lh ipa-${{ matrix.arch }}.kernel | awk '{print $5}')
+          INITRAMFS_SIZE=$(ls -lh ipa-${{ matrix.arch }}.initramfs | awk '{print $5}')
+          echo "${{ matrix.arch }}-kernel-size=${KERNEL_SIZE}" >> $GITHUB_OUTPUT
+          echo "${{ matrix.arch }}-initramfs-size=${INITRAMFS_SIZE}" >> $GITHUB_OUTPUT
 
       - name: Upload IPA artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ipa
+          name: ipa-${{ matrix.arch }}
           path: |
-            ipa.kernel
-            ipa.initramfs
+            ipa-${{ matrix.arch }}.kernel
+            ipa-${{ matrix.arch }}.initramfs
           retention-days: 1
 
-      - name: Show build summary
+  build-summary:
+    runs-on: ubuntu-latest
+    needs: build-ipa-image
+    if: always()
+
+    steps:
+      - name: Generate aggregated build summary
         run: |
-          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "# IPA Multi-Architecture Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **User**: rescue/rescue" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Generated Files:" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          ls -lh ipa.kernel ipa.initramfs >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+          echo "## Build Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Architecture | Kernel | Initramfs |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------------|--------|-----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| amd64 | ${{ needs.build-ipa-image.outputs.amd64-kernel-size }} | ${{ needs.build-ipa-image.outputs.amd64-initramfs-size }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| arm64 | ${{ needs.build-ipa-image.outputs.arm64-kernel-size }} | ${{ needs.build-ipa-image.outputs.arm64-initramfs-size }} |" >> $GITHUB_STEP_SUMMARY
