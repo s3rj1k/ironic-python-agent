@@ -43,7 +43,7 @@ repos:
     hooks:
       - id: hacking
         additional_dependencies: []
-        exclude: '^(doc|releasenotes|tools)/.*$'
+        exclude: '^(doc|releasenotes|tools|\.github)/.*$'
   - repo: https://github.com/codespell-project/codespell
     rev: v2.2.6
     hooks:
@@ -65,6 +65,7 @@ repos:
         entry: bashate
         language: python
         types: [shell]
+        exclude: '^\.github/.*'
   - repo: https://github.com/PyCQA/bandit
     rev: 1.7.10
     hooks:
