@@ -1,0 +1,125 @@
+name: Tests
+
+on:
+  workflow_call:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libssl-dev \
+            libffi-dev \
+            python3-dev \
+            parted \
+            gdisk \
+            dosfstools \
+            util-linux
+
+      - name: Install tox
+        run: |
+          python -m pip install --upgrade pip
+          pip install tox
+
+      - name: Run unit tests
+        run: tox -e py3
+
+  pep8:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install tox
+        run: |
+          python -m pip install --upgrade pip
+          pip install tox
+
+      - name: Run pep8/linting
+        run: tox -e pep8
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck on custom DIB elements
+        run: |
+          find .github/dib-elements \( -path "*/install.d/*" -o -path "*/extra-data.d/*" \) -type f ! -name "*.*" -print0 | xargs -0 shellcheck
+          find .github/dib-elements -name "*.sh" -type f -print0 | xargs -0 shellcheck
+
+  shfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shfmt
+        run: |
+          curl -sS https://webi.sh/shfmt | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Check shell script formatting
+        run: |
+          find .github/dib-elements \( -path "*/install.d/*" -o -path "*/extra-data.d/*" \) -type f ! -name "*.*" -exec ~/.local/bin/shfmt -w -s -ci -sr -fn {} +
+          find .github/dib-elements -name "*.sh" -type f -exec ~/.local/bin/shfmt -w -s -ci -sr -fn {} +
+          if ! git diff --exit-code; then
+            echo "ERROR: Shell scripts are not properly formatted!"
+            echo "Please run: find .github/dib-elements \( -path \"*/install.d/*\" -o -path \"*/extra-data.d/*\" \) -type f ! -name \"*.*\" -exec shfmt -w -s -ci -sr -fn {} + && find .github/dib-elements -name \"*.sh\" -type f -exec shfmt -w -s -ci -sr -fn {} +"
+            exit 1
+          fi
+
+  functional-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libssl-dev \
+            libffi-dev \
+            python3-dev \
+            parted \
+            gdisk \
+            dosfstools \
+            util-linux \
+            qemu-utils
+
+      - name: Install tox
+        run: |
+          python -m pip install --upgrade pip
+          pip install tox
+
+      - name: Run functional tests
+        run: tox -e functional

@@ -1,0 +1,51 @@
+#!/bin/bash
+
+# https://docs.openstack.org/diskimage-builder/latest/developer/developing_elements.html
+
+if [ "${DIB_DEBUG_TRACE:-0}" -gt 0 ]; then
+	set -x
+fi
+
+set -eu
+set -o pipefail
+
+# Enable CRB (CodeReady Builder) repository and install EPEL
+echo "Enabling CRB repository..."
+dnf config-manager --set-enabled crb || true
+
+# Detect CentOS version and install appropriate EPEL
+if [ -f /etc/os-release ]; then
+	# shellcheck disable=SC1091
+	. /etc/os-release
+	case "${VERSION_ID%%.*}" in
+		9)
+			echo "Installing EPEL for CentOS 9..."
+			dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm || true
+			;;
+		10)
+			echo "Installing EPEL for CentOS 10..."
+			dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm || true
+			;;
+		*)
+			echo "Unknown CentOS version: ${VERSION_ID}, skipping EPEL installation"
+			;;
+	esac
+fi
+
+if [ -z "${DIB_EXTRA_PACKAGES:-}" ]; then
+	echo "No extra packages specified via DIB_EXTRA_PACKAGES, skipping"
+	exit 0
+fi
+
+echo "Updating system packages..."
+dnf update -y
+
+echo "Installing extra packages: ${DIB_EXTRA_PACKAGES}"
+
+# shellcheck disable=SC2086
+dnf install -y ${DIB_EXTRA_PACKAGES}
+
+echo "Cleaning package cache..."
+dnf clean all
+
+echo "Extra packages installation complete"

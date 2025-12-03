@@ -1,0 +1,55 @@
+#!/bin/bash
+
+# https://docs.openstack.org/diskimage-builder/latest/developer/developing_elements.html
+
+if [ "${DIB_DEBUG_TRACE:-0}" -gt 0 ]; then
+	set -x
+fi
+
+set -eu
+set -o pipefail
+
+echo "=============================================="
+echo "DIB Build Report"
+echo "=============================================="
+
+echo ""
+echo "=== Installed Packages ==="
+rpm -qa --qf '%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n' | sort
+
+echo ""
+echo "=== Enabled Systemd Units (via symlinks) ==="
+for wants_dir in /etc/systemd/system/*.wants /usr/lib/systemd/system/*.wants; do
+	if [ -d "$wants_dir" ]; then
+		for link in "$wants_dir"/*; do
+			if [ -L "$link" ]; then
+				target=$(readlink "$link")
+				echo "$(basename "$wants_dir"): $(basename "$link") -> $target"
+			fi
+		done
+	fi
+done
+
+echo ""
+echo "=== Masked Units ==="
+for unit in /etc/systemd/system/*; do
+	if [ -L "$unit" ] && [ "$(readlink "$unit")" = "/dev/null" ]; then
+		basename "$unit"
+	fi
+done
+
+echo ""
+echo "=== Direct Enablements in /etc/systemd/system ==="
+shopt -s nullglob
+for unit in /etc/systemd/system/*.service /etc/systemd/system/*.socket /etc/systemd/system/*.timer; do
+	if [ -L "$unit" ]; then
+		target=$(readlink "$unit")
+		echo "$(basename "$unit") -> $target"
+	fi
+done
+shopt -u nullglob
+
+echo ""
+echo "=============================================="
+echo "End of DIB Build Report"
+echo "=============================================="

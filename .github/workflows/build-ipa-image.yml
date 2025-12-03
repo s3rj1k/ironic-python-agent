@@ -1,0 +1,175 @@
+name: Build IPA Image
+
+on:
+  push:
+    branches:
+      - custom_deploy
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  build-ipa-image:
+    needs: tests
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      amd64-9-stream-kernel-size: ${{ steps.build-info.outputs.amd64-9-stream-kernel-size }}
+      amd64-9-stream-initramfs-size: ${{ steps.build-info.outputs.amd64-9-stream-initramfs-size }}
+      arm64-9-stream-kernel-size: ${{ steps.build-info.outputs.arm64-9-stream-kernel-size }}
+      arm64-9-stream-initramfs-size: ${{ steps.build-info.outputs.arm64-9-stream-initramfs-size }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            release: 9-stream
+            network_element: dhclient-systemd
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            release: 9-stream
+            network_element: dhclient-systemd
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            debootstrap \
+            dosfstools \
+            gdisk \
+            kpartx \
+            libffi-dev \
+            libssl-dev \
+            parted \
+            python3-dev \
+            python3-pip \
+            python3-yaml \
+            qemu-utils \
+            util-linux
+
+      - name: Install diskimage-builder and ironic-python-agent-builder
+        run: |
+          pip install --user diskimage-builder ironic-python-agent-builder
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install current IPA source
+        run: |
+          pip install --user -e .
+
+      - name: Copy custom DIB elements
+        run: |
+          mkdir -p $HOME/.local/share/ironic-python-agent-builder/dib
+          cp -vr .github/dib-elements/* $HOME/.local/share/ironic-python-agent-builder/dib/
+
+      - name: Build IPA ramdisk image (amd64)
+        if: matrix.arch == 'amd64'
+        env:
+          DIB_RELEASE: "${{ matrix.release }}"
+          DIB_CHECKSUM: "sha256"
+          DIB_DHCP_TIMEOUT: "180"
+          DIB_PYTHON_EXEC: "/usr/bin/python3"
+          DIB_IPA_ENABLE_RESCUE: false
+          DIB_DEV_USER_USERNAME: "rescue"
+          DIB_DEV_USER_PASSWORD: "rescue"
+          DIB_DEV_USER_PWDLESS_SUDO: "yes"
+          DIB_REPOLOCATION_ironic_python_agent: "${{ github.workspace }}"
+          DIB_REPOREF_ironic_python_agent: "HEAD"
+          DIB_EXTRA_PACKAGES: "jq yq mdadm lvm2 curl qemu-img parted util-linux squashfs-tools xfsprogs dosfstools grub2-efi-x64 grub2-pc grub2-tools"
+        run: |
+          ironic-python-agent-builder \
+            -o ipa-amd64-${{ matrix.release }} \
+            -e extra-hardware \
+            -e devuser \
+            -e ${{ matrix.network_element }} \
+            -e packages-install \
+            -e custom-deploy \
+            -e build-report \
+            --extra-args="-a amd64" \
+            --release ${{ matrix.release }} centos
+
+      - name: Build IPA ramdisk image (arm64)
+        if: matrix.arch == 'arm64'
+        env:
+          DIB_RELEASE: "${{ matrix.release }}"
+          DIB_CHECKSUM: "sha256"
+          DIB_DHCP_TIMEOUT: "180"
+          DIB_PYTHON_EXEC: "/usr/bin/python3"
+          DIB_IPA_ENABLE_RESCUE: false
+          DIB_DEV_USER_USERNAME: "rescue"
+          DIB_DEV_USER_PASSWORD: "rescue"
+          DIB_DEV_USER_PWDLESS_SUDO: "yes"
+          DIB_REPOLOCATION_ironic_python_agent: "${{ github.workspace }}"
+          DIB_REPOREF_ironic_python_agent: "HEAD"
+          DIB_EXTRA_PACKAGES: "jq yq mdadm lvm2 curl qemu-img parted util-linux squashfs-tools xfsprogs dosfstools grub2-efi-aa64 grub2-tools"
+        run: |
+          ironic-python-agent-builder \
+            -o ipa-arm64-${{ matrix.release }} \
+            -e extra-hardware \
+            -e devuser \
+            -e ${{ matrix.network_element }} \
+            -e packages-install \
+            -e custom-deploy \
+            -e build-report \
+            --extra-args="-a arm64 --no-tmpfs" \
+            --release ${{ matrix.release }} centos
+
+      - name: Verify image artifacts
+        run: |
+          ls -lh ipa-${{ matrix.arch }}-${{ matrix.release }}.kernel ipa-${{ matrix.arch }}-${{ matrix.release }}.initramfs
+
+      - name: Capture build information
+        id: build-info
+        run: |
+          KERNEL_SIZE=$(ls -lh ipa-${{ matrix.arch }}-${{ matrix.release }}.kernel | awk '{print $5}')
+          INITRAMFS_SIZE=$(ls -lh ipa-${{ matrix.arch }}-${{ matrix.release }}.initramfs | awk '{print $5}')
+          echo "${{ matrix.arch }}-${{ matrix.release }}-kernel-size=${KERNEL_SIZE}" >> $GITHUB_OUTPUT
+          echo "${{ matrix.arch }}-${{ matrix.release }}-initramfs-size=${INITRAMFS_SIZE}" >> $GITHUB_OUTPUT
+
+      - name: Rename artifacts to standard names
+        run: |
+          mv ipa-${{ matrix.arch }}-${{ matrix.release }}.kernel ironic-python-agent.kernel
+          mv ipa-${{ matrix.arch }}-${{ matrix.release }}.initramfs ironic-python-agent.initramfs
+
+      - name: Upload IPA artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipa-${{ matrix.arch }}-${{ matrix.release }}
+          path: |
+            ironic-python-agent.kernel
+            ironic-python-agent.initramfs
+          retention-days: 1
+
+  build-summary:
+    runs-on: ubuntu-latest
+    needs: build-ipa-image
+    if: always()
+
+    steps:
+      - name: Generate aggregated build summary
+        run: |
+          echo "# IPA Multi-Architecture Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **User**: rescue/rescue" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "## Build Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Architecture | Release | Kernel | Initramfs |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------------|---------|--------|-----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| amd64 | 9-stream | ${{ needs.build-ipa-image.outputs.amd64-9-stream-kernel-size }} | ${{ needs.build-ipa-image.outputs.amd64-9-stream-initramfs-size }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| arm64 | 9-stream | ${{ needs.build-ipa-image.outputs.arm64-9-stream-kernel-size }} | ${{ needs.build-ipa-image.outputs.arm64-9-stream-initramfs-size }} |" >> $GITHUB_STEP_SUMMARY
