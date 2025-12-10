@@ -96,6 +96,7 @@ jobs:
             -e devuser \
             -e ${{ matrix.network_element }} \
             -e packages-install \
+            -e crane \
             -e custom-deploy \
             -e build-report \
             --extra-args="-a amd64" \
@@ -122,6 +123,7 @@ jobs:
             -e devuser \
             -e ${{ matrix.network_element }} \
             -e packages-install \
+            -e crane \
             -e custom-deploy \
             -e build-report \
             --extra-args="-a arm64 --no-tmpfs" \
@@ -141,16 +143,16 @@ jobs:
 
       - name: Rename artifacts to standard names
         run: |
-          mv ipa-${{ matrix.arch }}-${{ matrix.release }}.kernel ironic-python-agent.kernel
-          mv ipa-${{ matrix.arch }}-${{ matrix.release }}.initramfs ironic-python-agent.initramfs
+          mv ipa-${{ matrix.arch }}-${{ matrix.release }}.kernel ipa-${{ matrix.arch }}.kernel
+          mv ipa-${{ matrix.arch }}-${{ matrix.release }}.initramfs ipa-${{ matrix.arch }}.initramfs
 
       - name: Upload IPA artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ipa-${{ matrix.arch }}-${{ matrix.release }}
+          name: ipa-${{ matrix.arch }}
           path: |
-            ironic-python-agent.kernel
-            ironic-python-agent.initramfs
+            ipa-${{ matrix.arch }}.kernel
+            ipa-${{ matrix.arch }}.initramfs
           retention-days: 1
 
   build-summary:

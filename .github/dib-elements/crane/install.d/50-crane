@@ -1,0 +1,63 @@
+#!/bin/bash
+
+# https://docs.openstack.org/diskimage-builder/latest/developer/developing_elements.html
+
+if [ "${DIB_DEBUG_TRACE:-0}" -gt 0 ]; then
+	set -x
+fi
+
+set -eu
+set -o pipefail
+
+CRANE_VERSION="${DIB_CRANE_VERSION:-latest}"
+
+# Detect architecture
+ARCH=$(uname -m)
+case "${ARCH}" in
+	x86_64)
+		CRANE_ARCH="x86_64"
+		;;
+	aarch64)
+		CRANE_ARCH="arm64"
+		;;
+	*)
+		echo "Unsupported architecture: ${ARCH}"
+		exit 1
+		;;
+esac
+
+echo "Installing crane (${CRANE_VERSION}) for ${CRANE_ARCH}..."
+
+# Get the download URL
+if [ "${CRANE_VERSION}" = "latest" ]; then
+	DOWNLOAD_URL=$(curl -s https://api.github.com/repos/google/go-containerregistry/releases/latest |
+		grep "browser_download_url.*Linux_${CRANE_ARCH}.tar.gz" |
+		cut -d '"' -f 4)
+else
+	DOWNLOAD_URL="https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_${CRANE_ARCH}.tar.gz"
+fi
+
+if [ -z "${DOWNLOAD_URL}" ]; then
+	echo "Failed to determine crane download URL"
+	exit 1
+fi
+
+echo "Downloading crane from: ${DOWNLOAD_URL}"
+
+# Download and extract crane
+TEMP_DIR=$(mktemp -d)
+curl -sL "${DOWNLOAD_URL}" | tar -xz -C "${TEMP_DIR}"
+
+# Install crane binary
+install -m 755 "${TEMP_DIR}/crane" /usr/local/bin/crane
+
+# Cleanup
+rm -rf "${TEMP_DIR}"
+
+# Verify installation
+if crane version; then
+	echo "crane installed successfully"
+else
+	echo "crane installation verification failed"
+	exit 1
+fi
