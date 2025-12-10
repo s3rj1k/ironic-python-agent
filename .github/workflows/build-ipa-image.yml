@@ -96,6 +96,7 @@ jobs:
             -e devuser \
             -e ${{ matrix.network_element }} \
             -e packages-install \
+            -e crane \
             -e custom-deploy \
             -e build-report \
             --extra-args="-a amd64" \
@@ -122,6 +123,7 @@ jobs:
             -e devuser \
             -e ${{ matrix.network_element }} \
             -e packages-install \
+            -e crane \
             -e custom-deploy \
             -e build-report \
             --extra-args="-a arm64 --no-tmpfs" \
