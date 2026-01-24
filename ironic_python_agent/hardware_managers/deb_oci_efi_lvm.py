@@ -24,6 +24,7 @@ from oslo_log import log
 
 from ironic_python_agent import device_hints
 from ironic_python_agent import hardware
+from ironic_python_agent.hardware_managers import cloud_init_network
 
 LOG = log.getLogger(__name__)
 
@@ -1105,9 +1106,16 @@ datasource:
     # Write network-config if present
     network_data = configdrive_data.get('network_data', {})
     if network_data:
-        network_config_path = os.path.join(nocloud_seed_dir, 'network-config')
-        with open(network_config_path, 'w', encoding='utf-8') as f:
-            yaml.safe_dump(network_data, f, default_flow_style=False)
+        # Detect format and convert if needed
+        network_config = cloud_init_network.prepare_network_config(
+            network_data
+        )
+        if network_config:
+            network_config_path = os.path.join(
+                nocloud_seed_dir, 'network-config'
+            )
+            with open(network_config_path, 'w', encoding='utf-8') as f:
+                yaml.safe_dump(network_config, f, default_flow_style=False)
 
     # Set permissions
     for filename in os.listdir(nocloud_seed_dir):
