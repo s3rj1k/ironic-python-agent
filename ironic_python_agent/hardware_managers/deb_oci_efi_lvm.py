@@ -142,12 +142,64 @@ def get_configdrive_data(node):
     return configdrive
 
 
-def get_root_device_hints(node):
-    """Extract root_device hints from node instance_info.
+def parse_prefixed_hint_string(hint_string):
+    """Parse a prefixed hint string into a hints dictionary.
+
+    Supports simplified format for cloud-init/annotation use cases:
+    - 'serial=ABC123' -> {'serial': 's== ABC123'}
+    - 'wwn=0x123456' -> {'wwn': 's== 0x123456'}
+    - 'serial=ABC123 DEF456' -> {'serial': 's== ABC123 DEF456'} (RAID1)
+    - 'wwn=0x123 0x456' -> {'wwn': 's== 0x123 0x456'} (RAID1)
+
+    :param hint_string: String with format 'hint_type=value1 [value2]'
+    :returns: Dictionary containing root_device hints
+    :raises: ValueError if format is invalid
+    """
+    if not hint_string or not isinstance(hint_string, str):
+        raise ValueError('Hint string must be a non-empty string')
+
+    hint_string = hint_string.strip()
+    if '=' not in hint_string:
+        raise ValueError(
+            'Hint string must contain "=" separator. '
+            'Expected format: "serial=VALUE" or "wwn=VALUE"')
+
+    # Split on first equals only
+    parts = hint_string.split('=', 1)
+    if len(parts) != 2:
+        raise ValueError('Invalid hint string format')
+
+    hint_type = parts[0].strip().lower()
+    hint_values = parts[1].strip()
+
+    if hint_type not in ('serial', 'wwn'):
+        raise ValueError(
+            f'Unsupported hint type "{hint_type}". '
+            'Only "serial" and "wwn" are supported.')
+
+    if not hint_values:
+        raise ValueError(f'No value provided for {hint_type} hint')
+
+    # Add s== operator prefix (string equality)
+    hint_with_operator = f's== {hint_values}'
+
+    LOG.info('Parsed prefixed hint string "%s" -> {"%s": "%s"}',
+             hint_string, hint_type, hint_with_operator)
+
+    return {hint_type: hint_with_operator}
+
+
+def get_root_device_hints(node, configdrive_data):
+    """Extract root_device hints from node instance_info or annotation.
+
+    Priority order:
+    1. configdrive meta_data.root_device_hints (prefixed string format)
+    2. node.instance_info.root_device (dict format with operators)
 
     :param node: Node dictionary containing instance_info
+    :param configdrive_data: Configdrive dictionary
     :returns: Dictionary containing root_device hints
-    :raises: ValueError if node is invalid or root_device is missing
+    :raises: ValueError if node is invalid or root_device not found anywhere
     """
     if node is None:
         raise ValueError('Node cannot be None')
@@ -158,15 +210,35 @@ def get_root_device_hints(node):
     if not isinstance(instance_info, dict):
         raise ValueError('instance_info must be a dictionary')
 
+    # Check annotation first (via configdrive metadata)
+    meta_data = configdrive_data.get('meta_data', {})
+    annotation_hints = meta_data.get('root_device_hints')
+
+    if annotation_hints is not None:
+        # Annotations use prefixed string format only
+        if not isinstance(annotation_hints, str):
+            raise ValueError(
+                'root_device_hints from annotation must be a string '
+                'in format "serial=VALUE" or "wwn=VALUE"')
+
+        parsed_hints = parse_prefixed_hint_string(annotation_hints)
+        LOG.info('Using root_device hints from annotation: %s',
+                 parsed_hints)
+        return parsed_hints
+
+    # Fall back to instance_info
     root_device = instance_info.get('root_device')
-    if root_device is None:
-        raise ValueError('root_device not found in instance_info')
+    if root_device is not None:
+        if not isinstance(root_device, dict):
+            raise ValueError('root_device must be a dictionary')
+        LOG.info('Using root_device hints from instance_info: %s',
+                 root_device)
+        return root_device
 
-    if not isinstance(root_device, dict):
-        raise ValueError('root_device must be a dictionary')
-
-    LOG.info('Extracted root_device hints: %s', root_device)
-    return root_device
+    # Neither source provided root_device hints
+    raise ValueError(
+        'root_device hints not found in instance_info or annotation'
+    )
 
 
 def find_device_by_hints(hints):
@@ -294,17 +366,76 @@ def resolve_root_devices(root_device_hints):
     return (primary_device, secondary_device)
 
 
-def get_oci_image(configdrive_data):
-    """Get OCI image from metadata or use default.
+def get_oci_image(node, configdrive_data):
+    """Get OCI image from instance_info, metadata, or use default.
+
+    Priority order:
+    1. node.instance_info.image_source with oci:// prefix
+    2. configdrive meta_data.oci_image (from annotation)
+    3. DEFAULT_OCI_IMAGE
+
+    :param node: Node dictionary containing instance_info
+    :param configdrive_data: Configdrive dictionary
+    :returns: OCI image reference string (without oci:// prefix)
+    """
+    oci_image = None
+
+    # Check instance_info first
+    instance_info = node.get('instance_info', {})
+    image_source = instance_info.get('image_source', '').strip()
+
+    if image_source.startswith('oci://'):
+        oci_image = image_source.removeprefix('oci://').strip()
+        if not oci_image:
+            LOG.warning("Empty OCI image after stripping oci:// prefix, "
+                        "falling back to annotation/default")
+            oci_image = None
+        else:
+            LOG.info("Using OCI image from instance_info: %s", oci_image)
+    else:
+        # Fall back to annotation (via configdrive metadata)
+        meta_data = configdrive_data.get('meta_data', {})
+        annotation_image = (meta_data.get('oci_image') or '').strip()
+
+        if annotation_image:
+            oci_image = annotation_image
+            LOG.info("Using OCI image from annotation: %s", oci_image)
+        else:
+            # Fall back to default
+            oci_image = DEFAULT_OCI_IMAGE
+            LOG.info("Using default OCI image: %s", oci_image)
+
+    return oci_image
+
+
+def get_disk_wipe_mode(configdrive_data, is_raid):
+    """Get disk wipe mode from configdrive or use default based on setup.
+
+    Priority order:
+    1. configdrive meta_data.disk_wipe_mode (from annotation)
+    2. Default: "all" for RAID1, "target" for single disk
 
     :param configdrive_data: Configdrive dictionary
-    :returns: OCI image reference string
+    :param is_raid: Boolean indicating if this is a RAID setup
+    :returns: String "all" or "target"
+    :raises: ValueError if disk_wipe_mode has invalid value
     """
     meta_data = configdrive_data.get('meta_data', {})
-    oci_image = (meta_data.get('oci_image') or '').strip() or DEFAULT_OCI_IMAGE
+    wipe_mode = (meta_data.get('disk_wipe_mode') or '').strip().lower()
 
-    LOG.info("Using OCI image: %s", oci_image)
-    return oci_image
+    if wipe_mode:
+        if wipe_mode not in ('all', 'target'):
+            raise ValueError(
+                f'Invalid disk_wipe_mode "{wipe_mode}". '
+                'Valid values are: "all", "target"')
+        LOG.info('Using disk wipe mode from annotation: %s', wipe_mode)
+        return wipe_mode
+
+    # Use default based on setup type
+    default_mode = 'all' if is_raid else 'target'
+    LOG.info('Using default disk wipe mode for %s setup: %s',
+             'RAID1' if is_raid else 'single disk', default_mode)
+    return default_mode
 
 
 def get_architecture_config(oci_image):
@@ -365,6 +496,30 @@ def wait_for_device(device):
     raise RuntimeError(f"Device {device} did not become available")
 
 
+def clean_all_devices():
+    """Clean all block devices to remove stray RAID/LVM metadata.
+
+    Useful for nodes that may have multiple disks with old metadata
+    from previous deployments.
+    """
+    LOG.info("Cleaning all block devices on the system")
+
+    try:
+        devices = hardware.list_all_block_devices()
+        LOG.info("Found %d block devices to clean", len(devices))
+
+        for device_obj in devices:
+            device = device_obj.name
+            try:
+                clean_device(device)
+            except Exception as e:
+                LOG.warning("Error cleaning device %s: %s", device, e)
+
+        LOG.info("Finished cleaning all block devices")
+    except Exception as e:
+        LOG.error("Error listing block devices: %s", e)
+
+
 def get_partition_path(device, partition_number):
     """Get the partition path for a device.
 
@@ -377,6 +532,22 @@ def get_partition_path(device, partition_number):
         return f"{device}p{partition_number}"
 
     return f"{device}{partition_number}"
+
+
+def clean_partition_signatures(partition):
+    """Clean RAID, LVM, and filesystem signatures from a partition.
+
+    Does not remove the partition itself, only metadata/signatures.
+
+    :param partition: Partition path to clean
+    """
+    LOG.debug("Cleaning signatures from partition: %s", partition)
+    run_command(['pvremove', '-ff', '-y', partition], check=False)
+    run_command(['wipefs', '--all', '--force', partition], check=False)
+    run_command(
+        ['mdadm', '--zero-superblock', '--force', partition],
+        check=False
+    )
 
 
 def clean_device(device):
@@ -579,6 +750,11 @@ def partition_disk(device, vg_name, lv_name, second_device=None,
 
         if not homehost:
             raise RuntimeError("homehost required for RAID configuration")
+
+        # Clean new partitions before creating RAID
+        LOG.info("Cleaning partition signatures before RAID creation")
+        clean_partition_signatures(data_partition)
+        clean_partition_signatures(second_data_partition)
 
         # Create RAID array
         run_command([
@@ -1181,7 +1357,7 @@ class DebOCIEFILVMHardwareManager(hardware.HardwareManager):
         try:
             # Extract configuration from node
             configdrive_data = get_configdrive_data(node)
-            root_device_hints = get_root_device_hints(node)
+            root_device_hints = get_root_device_hints(node, configdrive_data)
             resolved_devices = resolve_root_devices(root_device_hints)
             meta_data = configdrive_data.get('meta_data', {})
             metal3_name = meta_data.get('metal3-name')
@@ -1197,18 +1373,29 @@ class DebOCIEFILVMHardwareManager(hardware.HardwareManager):
                          'second_device: %s (RAID1)', second_device)
 
             # Get OCI image and architecture-specific configuration
-            oci_image = get_oci_image(configdrive_data)
+            oci_image = get_oci_image(node, configdrive_data)
             arch_config = get_architecture_config(oci_image)
             LOG.info('DebOCIEFILVMHardwareManager: '
                      'architecture config: %s', arch_config)
 
-            # Clean devices
-            wait_for_device(root_device_path)
-            clean_device(root_device_path)
+            # Get disk wipe mode
+            is_raid_setup = second_device is not None
+            wipe_mode = get_disk_wipe_mode(configdrive_data, is_raid_setup)
 
-            if second_device:
-                wait_for_device(second_device)
-                clean_device(second_device)
+            # Clean devices based on wipe mode
+            if wipe_mode == 'all':
+                LOG.info("Cleaning all block devices (wipe_mode: all)")
+                clean_all_devices()
+                wait_for_device(root_device_path)
+                if second_device:
+                    wait_for_device(second_device)
+            else:  # wipe_mode == 'target'
+                LOG.info("Cleaning only target device(s) (wipe_mode: target)")
+                wait_for_device(root_device_path)
+                clean_device(root_device_path)
+                if second_device:
+                    wait_for_device(second_device)
+                    clean_device(second_device)
 
             # Partition disk
             is_raid, pv_device = partition_disk(
