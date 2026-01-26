@@ -6,7 +6,7 @@ After=network.target
 
 [Service]
 Type=forking
-ExecStart=/usr/sbin/dhclient -4
+ExecStart=/usr/sbin/dhclient -4 -cf /etc/dhcp/dhclient.conf
 ExecStop=/usr/sbin/dhclient -r
 RemainAfterExit=yes
 
