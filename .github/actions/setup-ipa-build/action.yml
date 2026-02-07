@@ -1,0 +1,46 @@
+name: Setup IPA Build Environment
+description: Install system dependencies, DIB, IPA builder, and custom elements
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+
+    - name: Install system dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          debootstrap \
+          dosfstools \
+          gdisk \
+          kpartx \
+          libffi-dev \
+          libssl-dev \
+          parted \
+          python3-dev \
+          python3-pip \
+          python3-yaml \
+          qemu-utils \
+          util-linux
+
+    - name: Install diskimage-builder and ironic-python-agent-builder
+      shell: bash
+      run: |
+        pip install --user diskimage-builder ironic-python-agent-builder
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+    - name: Install current IPA source
+      shell: bash
+      run: |
+        pip install --user -e .
+
+    - name: Copy custom DIB elements
+      shell: bash
+      run: |
+        mkdir -p $HOME/.local/share/ironic-python-agent-builder/dib
+        cp -vr .github/dib-elements/* $HOME/.local/share/ironic-python-agent-builder/dib/

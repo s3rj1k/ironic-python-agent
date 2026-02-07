@@ -1,0 +1,26 @@
+#!/bin/bash
+
+if [ "${DIB_DEBUG_TRACE:-0}" -gt 0 ]; then
+	set -x
+fi
+
+set -eu
+set -o pipefail
+
+# Redirect journald console forwarding to tty12 instead of the main console.
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/console-redirect.conf << 'EOF'
+[Journal]
+TTYPath=/dev/tty12
+EOF
+
+# Add notice about redirected journal output to login screen and motd.
+cat >> /etc/issue << 'EOF'
+Journal console output is redirected to /dev/tty12.
+Use 'journalctl -f' to view live logs over SSH.
+
+EOF
+cat >> /etc/motd << 'EOF'
+Journal console output is redirected to /dev/tty12.
+Use 'journalctl -f' to view live logs over SSH.
+EOF

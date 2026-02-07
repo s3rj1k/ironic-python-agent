@@ -1,0 +1,62 @@
+name: Build IPA CentOS 9
+
+on:
+  workflow_call:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            grub_pkg: grub2-efi-x64 grub2-pc
+            extra_args: "-a amd64"
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            grub_pkg: grub2-efi-aa64
+            extra_args: "-a arm64 --no-tmpfs"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-ipa-build
+
+      - name: Build IPA ramdisk image
+        env:
+          DIB_RELEASE: "9-stream"
+          DIB_CHECKSUM: "sha256"
+          DIB_DHCP_TIMEOUT: "180"
+          DIB_PYTHON_EXEC: "/usr/bin/python3"
+          DIB_IPA_ENABLE_RESCUE: false
+          DIB_DEV_USER_USERNAME: "rescue"
+          DIB_DEV_USER_PASSWORD: "rescue"
+          DIB_DEV_USER_PWDLESS_SUDO: "yes"
+          DIB_REPOLOCATION_ironic_python_agent: "${{ github.workspace }}"
+          DIB_REPOREF_ironic_python_agent: "HEAD"
+          DIB_EXTRA_PACKAGES: "jq yq mdadm lvm2 curl qemu-img parted util-linux squashfs-tools xfsprogs dosfstools tmux ${{ matrix.grub_pkg }} grub2-tools"
+        run: |
+          ironic-python-agent-builder \
+            -o ipa-${{ matrix.arch }} \
+            -e extra-hardware \
+            -e devuser \
+            -e dhclient-systemd \
+            -e packages-install \
+            -e crane \
+            -e custom-deploy \
+            -e journald-console-redirect \
+            -e build-report \
+            --extra-args="${{ matrix.extra_args }}" \
+            --release 9-stream centos
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ipa-${{ matrix.arch }}
+          path: |
+            ipa-${{ matrix.arch }}.kernel
+            ipa-${{ matrix.arch }}.initramfs
+          retention-days: 1

@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - custom_deploy
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  build-centos9:
+    needs: tests
+    uses: ./.github/workflows/build-centos9.yml
+
+  build-centos10:
+    needs: tests
+    uses: ./.github/workflows/build-centos10.yml
+
+  deploy-to-pages:
+    runs-on: ubuntu-latest
+    needs: [build-centos9, build-centos10]
+    permissions:
+      actions: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Delete all artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for ID in $(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts --jq '.artifacts[].id'); do
+            sleep 1
+            gh api repos/${{ github.repository }}/actions/artifacts/${ID} -X DELETE || true
+          done
+
+      - name: Prepare pages directory
+        run: |
+          mkdir -p _site
+
+          if [[ "${{ github.event.head_commit.message }}" == WIP:* ]]; then
+            SUFFIX="-wip"
+            echo "WIP commit detected, adding suffix: ${SUFFIX}"
+          else
+            SUFFIX=""
+            echo "Regular commit, no suffix"
+          fi
+
+          for NAME in ipa-amd64 ipa-arm64 ipa-amd64-10-stream ipa-arm64-10-stream; do
+            cp "artifacts/${NAME}/${NAME}.kernel" "_site/${NAME}${SUFFIX}.kernel"
+            cp "artifacts/${NAME}/${NAME}.initramfs" "_site/${NAME}${SUFFIX}.initramfs"
+          done
+
+          ls -la _site/
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v4
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Verify and summarize
+        run: |
+          PAGES_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
+
+          if [[ "${{ github.event.head_commit.message }}" == WIP:* ]]; then
+            SUFFIX="-wip"
+          else
+            SUFFIX=""
+          fi
+
+          echo "# IPA Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| File | Size | SHA256 | Verified | Link |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|--------|----------|------|" >> $GITHUB_STEP_SUMMARY
+
+          FAILED=0
+          for NAME in ipa-amd64 ipa-arm64 ipa-amd64-10-stream ipa-arm64-10-stream; do
+            for EXT in kernel initramfs; do
+              FILE="${NAME}${SUFFIX}.${EXT}"
+              LOCAL="_site/${FILE}"
+              SIZE=$(ls -lh "${LOCAL}" | awk '{print $5}')
+              EXPECTED=$(sha256sum "${LOCAL}" | awk '{print $1}')
+              ACTUAL=$(curl -sfL "${PAGES_URL}/${FILE}" | sha256sum | awk '{print $1}')
+              rm -f "${LOCAL}"
+              if [ "${EXPECTED}" = "${ACTUAL}" ]; then
+                echo "OK: ${FILE}"
+                echo "| ${FILE} | ${SIZE} | \`${EXPECTED}\` | OK | [download](${PAGES_URL}/${FILE}) |" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "FAIL: ${FILE} expected=${EXPECTED} actual=${ACTUAL}"
+                echo "| ${FILE} | ${SIZE} | \`${EXPECTED}\` | FAIL | [download](${PAGES_URL}/${FILE}) |" >> $GITHUB_STEP_SUMMARY
+                FAILED=1
+              fi
+            done
+          done
+
+          if [ "${FAILED}" -ne 0 ]; then
+            echo "::error::Some artifacts failed verification"
+            exit 1
+          fi
+

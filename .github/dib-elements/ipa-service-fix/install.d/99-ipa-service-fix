@@ -1,0 +1,49 @@
+#!/bin/bash
+
+# Fix ConditionPathExists being in [Service] instead of [Unit] in the
+# upstream ironic-python-agent.service unit file, and ensure the service
+# is enabled.
+
+if [ "${DIB_DEBUG_TRACE:-0}" -gt 0 ]; then
+	set -x
+fi
+
+set -eu
+set -o pipefail
+
+# Comment out misplaced ConditionPathExists in the upstream unit file
+sed -i 's/^ConditionPathExists=/#ConditionPathExists=/' \
+	/usr/lib/systemd/system/ironic-python-agent.service
+
+echo "Commented out ConditionPathExists in ironic-python-agent.service:"
+grep -n 'ConditionPathExists' /usr/lib/systemd/system/ironic-python-agent.service || true
+
+# Add correct placement via drop-in override
+mkdir -p /etc/systemd/system/ironic-python-agent.service.d
+cat > /etc/systemd/system/ironic-python-agent.service.d/condition-fix.conf << 'EOF'
+[Unit]
+ConditionPathExists=!/etc/.rescued
+EOF
+
+echo "Installed ironic-python-agent.service drop-in:"
+cat /etc/systemd/system/ironic-python-agent.service.d/condition-fix.conf
+
+# Install a systemd preset to enable ironic-python-agent.
+# This is necessary because on ramdisk-based boots, systemd detects a "first
+# boot" (no /var/lib/systemd/first-boot-done marker) and runs preset-all.
+# CentOS/RHEL ship 99-default-disable.preset ("disable *") which removes any
+# manually created symlinks. A preset file with a lower number takes priority
+# and ensures the service stays enabled.
+install -m 0644 /dev/stdin /usr/lib/systemd/system-preset/50-ironic-python-agent.preset << 'EOF'
+enable ironic-python-agent.service
+EOF
+
+echo "Installed systemd preset:"
+cat /usr/lib/systemd/system-preset/50-ironic-python-agent.preset
+
+# Enable service
+mkdir -p /etc/systemd/system/multi-user.target.wants
+ln -sf /usr/lib/systemd/system/ironic-python-agent.service \
+	/etc/systemd/system/multi-user.target.wants/ironic-python-agent.service
+
+echo "ironic-python-agent.service enabled via symlink"

@@ -1,0 +1,52 @@
+#!/bin/bash
+
+# Ensure glean runs before NetworkManager via a systemd drop-in.
+# Combined with NM's After=systemd-udev-settle.service override
+# (installed by glean), this ensures glean writes keyfiles before NM starts.
+#
+# Also sets no-auto-default=* to prevent NM from creating auto DHCP
+# connections that race with glean's keyfiles.
+
+if [ "${DIB_DEBUG_TRACE:-0}" -gt 0 ]; then
+	set -x
+fi
+
+set -eu
+set -o pipefail
+
+# Add drop-in to order glean before NM
+mkdir -p /etc/systemd/system/glean@.service.d
+cat > /etc/systemd/system/glean@.service.d/before-nm.conf << 'EOF'
+[Unit]
+Before=NetworkManager.service
+Before=NetworkManager-wait-online.service
+Before=NetworkManager-dispatcher.service
+EOF
+
+echo "Installed glean@.service drop-in:"
+cat /etc/systemd/system/glean@.service.d/before-nm.conf
+
+# Prevent NM from auto-creating DHCP connections for unconfigured interfaces.
+# Glean handles DHCP fallback itself by writing keyfiles.
+mkdir -p /etc/NetworkManager/conf.d
+cat > /etc/NetworkManager/conf.d/no-auto-default.conf << 'EOF'
+[main]
+no-auto-default=*
+EOF
+
+echo "Installed /etc/NetworkManager/conf.d/no-auto-default.conf"
+
+# Add drop-in to make NM wait for glean-early (config drive mount).
+# Glean already installs After=systemd-udev-settle.service, but udev-settle
+# only waits for udev event processing, not for glean@ services to complete.
+# Ordering NM after glean-early ensures the config drive is mounted before NM
+# starts, giving glean@ instances time to write keyfiles.
+mkdir -p /etc/systemd/system/NetworkManager.service.d
+cat > /etc/systemd/system/NetworkManager.service.d/after-glean.conf << 'EOF'
+[Unit]
+After=glean-early.service
+Wants=glean-early.service
+EOF
+
+echo "Installed NetworkManager.service drop-in:"
+cat /etc/systemd/system/NetworkManager.service.d/after-glean.conf

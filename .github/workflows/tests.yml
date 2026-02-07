@@ -79,13 +79,15 @@ jobs:
 
       - name: Install shfmt
         run: |
-          curl -sS https://webi.sh/shfmt | sh
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          SHFMT_VERSION=$(curl -sS https://api.github.com/repos/mvdan/sh/releases/latest | jq -r '.tag_name')
+          ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+          curl -sLo /usr/local/bin/shfmt "https://github.com/mvdan/sh/releases/download/${SHFMT_VERSION}/shfmt_${SHFMT_VERSION}_linux_${ARCH}"
+          chmod +x /usr/local/bin/shfmt
 
       - name: Check shell script formatting
         run: |
-          find .github/dib-elements \( -path "*/install.d/*" -o -path "*/extra-data.d/*" \) -type f ! -name "*.*" -exec ~/.local/bin/shfmt -w -s -ci -sr -fn {} +
-          find .github/dib-elements -name "*.sh" -type f -exec ~/.local/bin/shfmt -w -s -ci -sr -fn {} +
+          find .github/dib-elements \( -path "*/install.d/*" -o -path "*/extra-data.d/*" \) -type f ! -name "*.*" -exec shfmt -w -s -ci -sr -fn {} +
+          find .github/dib-elements -name "*.sh" -type f -exec shfmt -w -s -ci -sr -fn {} +
           if ! git diff --exit-code; then
             echo "ERROR: Shell scripts are not properly formatted!"
             echo "Please run: find .github/dib-elements \( -path \"*/install.d/*\" -o -path \"*/extra-data.d/*\" \) -type f ! -name \"*.*\" -exec shfmt -w -s -ci -sr -fn {} + && find .github/dib-elements -name \"*.sh\" -type f -exec shfmt -w -s -ci -sr -fn {} +"
