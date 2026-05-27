@@ -39,6 +39,31 @@ jobs:
           DIB_REPOREF_ironic_python_agent: "HEAD"
           DIB_EXTRA_PACKAGES: "jq yq mdadm lvm2 curl qemu-img parted util-linux squashfs-tools xfsprogs dosfstools tmux ${{ matrix.grub_pkg }} grub2-tools"
         run: |
+          # CentOS Stream 10's GenericCloud "-latest" image ships an empty
+          # .SHA256SUM and the dated builds use BSD-format checksums, both of which
+          # break dib's `sha256sum --check`. Resolve the newest dated image, verify
+          # it ourselves, and pass it to dib via DIB_LOCAL_IMAGE so dib skips its
+          # own broken download+checksum step.
+          # Arch naming differs: x86_64 -> GenericCloud-x86_64-10-<date>.x86_64,
+          # aarch64 -> GenericCloud-10-<date>.aarch64; match arch-agnostically and
+          # keep only dated builds (8-digit date) to exclude the broken "-latest".
+          case "${{ matrix.arch }}" in
+            amd64) carch=x86_64 ;;
+            arm64) carch=aarch64 ;;
+            *) carch="${{ matrix.arch }}" ;;
+          esac
+          base="https://cloud.centos.org/centos/10-stream/${carch}/images"
+          retry="--retry 3 --retry-delay 5 --retry-all-errors"
+          img=$(curl -fsSL $retry "${base}/" \
+            | grep -oE "CentOS-Stream-GenericCloud-[0-9A-Za-z_.-]+\.${carch}\.qcow2" \
+            | grep -E '[0-9]{8}' | sort -ru | head -1)
+          [ -n "${img}" ] || { echo "ERROR: no dated CentOS GenericCloud image for ${carch}" >&2; exit 1; }
+          sha=$(curl -fsSL $retry "${base}/${img}.SHA256SUM" | sed -n 's/^SHA256 (.*) = \([0-9a-f]\{64\}\)$/\1/p')
+          [ "${#sha}" -eq 64 ] || { echo "ERROR: missing SHA256 checksum for ${img}" >&2; exit 1; }
+          curl -fL $retry -o "${img}" "${base}/${img}"
+          echo "${sha}  ${img}" | sha256sum -c -
+          export DIB_LOCAL_IMAGE="${PWD}/${img}"
+
           ironic-python-agent-builder \
             -o ipa-${{ matrix.arch }}-10-stream \
             -e extra-hardware \
