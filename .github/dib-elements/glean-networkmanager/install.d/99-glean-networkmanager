@@ -21,6 +21,10 @@ cat > /etc/systemd/system/glean@.service.d/before-nm.conf << 'EOF'
 Before=NetworkManager.service
 Before=NetworkManager-wait-online.service
 Before=NetworkManager-dispatcher.service
+# Order glean after the config-drive mount when present, but stay soft: with no
+# config drive (DHCP-only boot) glean must still run and fall back, not block.
+Wants=mnt-config.mount
+After=mnt-config.mount
 EOF
 
 echo "Installed glean@.service drop-in:"
@@ -36,17 +40,44 @@ EOF
 
 echo "Installed /etc/NetworkManager/conf.d/no-auto-default.conf"
 
-# Add drop-in to make NM wait for glean-early (config drive mount).
-# Glean already installs After=systemd-udev-settle.service, but udev-settle
-# only waits for udev event processing, not for glean@ services to complete.
-# Ordering NM after glean-early ensures the config drive is mounted before NM
-# starts, giving glean@ instances time to write keyfiles.
-mkdir -p /etc/systemd/system/NetworkManager.service.d
-cat > /etc/systemd/system/NetworkManager.service.d/after-glean.conf << 'EOF'
+# Mount the config-2 drive (boot ISO carrying network_data.json) at /mnt/config
+# where glean expects it; nothing else in the image mounts it.
+cat > /etc/systemd/system/mnt-config.mount << 'EOF'
 [Unit]
-After=glean-early.service
-Wants=glean-early.service
+Description=Mount config-2 config drive for glean
+DefaultDependencies=no
+After=systemd-udev-settle.service
+ConditionPathExists=/dev/disk/by-label/config-2
+
+[Mount]
+What=/dev/disk/by-label/config-2
+Where=/mnt/config
+Type=iso9660
+Options=ro,nofail
+
+[Install]
+WantedBy=local-fs.target
 EOF
 
-echo "Installed NetworkManager.service drop-in:"
-cat /etc/systemd/system/NetworkManager.service.d/after-glean.conf
+mkdir -p /mnt/config
+mkdir -p /etc/systemd/system/local-fs.target.wants
+ln -sf ../mnt-config.mount /etc/systemd/system/local-fs.target.wants/mnt-config.mount
+
+echo "Installed mnt-config.mount:"
+cat /etc/systemd/system/mnt-config.mount
+
+# Hotfix glean: NM keyfile wants "mac-address" (hyphen), glean writes
+# "mac_address" so NM drops it. Patch only the keyfile template, not the
+# Python .format(mac_address=...) kwargs.
+# Refs:
+#   glean keyfile template: https://opendev.org/opendev/glean/src/branch/master/glean/cmd.py#L158
+#   NM keyfile property naming: https://github.com/NetworkManager/NetworkManager/blob/756e612858d4eb65de372d893c244066ada1f459/src/nmtui/nmt-page-veth.c#L70
+GLEAN_CMD="$(find / -path '*/glean/cmd.py' -not -path '/proc/*' 2> /dev/null | head -1)"
+if [ -n "${GLEAN_CMD}" ]; then
+	sed -i 's/^\([[:space:]]*\)mac_address={mac_address}/\1mac-address={mac_address}/' "${GLEAN_CMD}"
+	echo "Patched glean keyfile MAC key in ${GLEAN_CMD}:"
+	grep -n 'mac-address={mac_address}' "${GLEAN_CMD}" ||
+		echo "WARNING: glean mac-address keyfile line not found; upstream may have changed"
+else
+	echo "WARNING: glean cmd.py not found; skipped mac-address keyfile hotfix"
+fi
